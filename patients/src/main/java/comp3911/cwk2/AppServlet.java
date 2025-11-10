@@ -40,7 +40,7 @@ public class AppServlet extends HttpServlet {
   // Load envrionment variables from .env, then get the connection URL
   static {
     Dotenv dotenv = Dotenv.load(); 
-    CONNECTION_URL = dotenv.get("DB_CONNECTION_URL") 
+    CONNECTION_URL = dotenv.get("DB_CONNECTION_URL");
 
   @Override
   public void init() throws ServletException {
