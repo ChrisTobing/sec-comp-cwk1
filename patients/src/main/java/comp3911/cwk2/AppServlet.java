@@ -25,15 +25,22 @@ import freemarker.template.TemplateExceptionHandler;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
+import io.github.cdimascio.dotenv.Dotenv; // Added for .env file
+
 @SuppressWarnings("serial")
 public class AppServlet extends HttpServlet {
 
-  private static final String CONNECTION_URL = "jdbc:sqlite:db.sqlite3";
+  private static final String CONNECTION_URL;
   private static final String AUTH_QUERY = "select * from user where username='%s' and password='%s'";
   private static final String SEARCH_QUERY = "select * from patient where surname='%s' collate nocase";
 
   private final Configuration fm = new Configuration(Configuration.VERSION_2_3_28);
   private Connection database;
+
+  // Load envrionment variables from .env, then get the connection URL
+  static {
+    Dotenv dotenv = Dotenv.load(); 
+    CONNECTION_URL = dotenv.get("DB_CONNECTION_URL") 
 
   @Override
   public void init() throws ServletException {
