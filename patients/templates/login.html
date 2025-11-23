@@ -10,6 +10,12 @@
     <div class="container">
       <h1 class="mt-2 mb-4">Patient Records System</h1>
 
+      <#if remainingAttempts??>
+        <div class="alert alert-warning" role="alert">
+          <strong>Warning:</strong> You have ${remainingAttempts} attempt(s) remaining before your account is temporarily locked.
+        </div>
+      </#if>
+
       <form action="" method="POST">
         <div class="row">
           <div class="col-4">

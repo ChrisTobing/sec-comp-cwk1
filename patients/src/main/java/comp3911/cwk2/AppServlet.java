@@ -24,6 +24,7 @@ import freemarker.template.TemplateExceptionHandler;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.cdimascio.dotenv.Dotenv; // Added for .env file
 
@@ -33,14 +34,41 @@ public class AppServlet extends HttpServlet {
   private static final String CONNECTION_URL;
   private static final String AUTH_QUERY = "select * from user where username='%s' and password='%s'";
   private static final String SEARCH_QUERY = "select * from patient where surname='%s' collate nocase";
+  
+  // Attempt tracking constants
+  private static final int MAX_ATTEMPTS = 5;
+  private static final long LOCKOUT_DURATION_MS = 1 * 60 * 1000; // 15 minutes in milliseconds
 
   private final Configuration fm = new Configuration(Configuration.VERSION_2_3_28);
   private Connection database;
+  
+  /*
+  Flaw Fix: Brute force protection - Track login attempts by IP address: IP -> AttemptInfo
+  Implementation Steps:
+  1. Add a method to get the client IP address from the request.
+  2. Add a ConcurrentHashMap to map IP addresses to AttemptInfo objects.
+  3. Add methods to increase, reset, and check lockout status for an IP address.
+  4. Added a new template for the locked out page.
+  5. Implemented the logic to check if the IP is locked out and display the appropriate template.
+   */ 
+  private final ConcurrentHashMap<String, AttemptInfo> attemptTracker = new ConcurrentHashMap<>();
+  
+  // Inner class to track attempt information
+  private static class AttemptInfo {
+    int attempts;
+    long lockoutUntil; // timestamp when lockout expires (0 if not locked out)
+    
+    AttemptInfo() {
+      this.attempts = 0;
+      this.lockoutUntil = 0;
+    }
+  }
 
   // Load envrionment variables from .env, then get the connection URL
   static {
     Dotenv dotenv = Dotenv.load(); 
     CONNECTION_URL = dotenv.get("DB_CONNECTION_URL");
+  }
 
   @Override
   public void init() throws ServletException {
@@ -74,8 +102,30 @@ public class AppServlet extends HttpServlet {
   protected void doGet(HttpServletRequest request, HttpServletResponse response)
    throws ServletException, IOException {
     try {
-      Template template = fm.getTemplate("login.html");
-      template.process(null, response.getWriter());
+      String clientIp = getClientIp(request);
+      Map<String, Object> model = new HashMap<>();
+      
+      // IP is Locked out, show the locked out page
+      if (isLockedOut(clientIp)) {
+        AttemptInfo info = attemptTracker.get(clientIp);
+        if (info != null) {
+          Template template = fm.getTemplate("locked.html");
+          long remainingMinutes = (info.lockoutUntil - System.currentTimeMillis()) / (60 * 1000) + 1;
+          model.put("remainingMinutes", remainingMinutes);
+          template.process(model, response.getWriter());
+        } else {
+          Template template = fm.getTemplate("login.html");
+          template.process(model, response.getWriter());
+        }
+      } else {
+        // IP is not Locked out, show the login page
+        AttemptInfo info = attemptTracker.get(clientIp);
+        if (info != null && info.attempts > 0 && info.attempts < MAX_ATTEMPTS) {
+          model.put("remainingAttempts", MAX_ATTEMPTS - info.attempts);
+        }
+        Template template = fm.getTemplate("login.html");
+        template.process(model, response.getWriter());
+      }
       response.setContentType("text/html");
       response.setStatus(HttpServletResponse.SC_OK);
     }
@@ -87,13 +137,37 @@ public class AppServlet extends HttpServlet {
   @Override
   protected void doPost(HttpServletRequest request, HttpServletResponse response)
    throws ServletException, IOException {
-     // Get form parameters
+    String clientIp = getClientIp(request);
+    
+    // Check if IP is currently locked out
+    if (isLockedOut(clientIp)) {
+      try {
+        AttemptInfo info = attemptTracker.get(clientIp);
+        Map<String, Object> model = new HashMap<>();
+        long remainingMinutes = (info.lockoutUntil - System.currentTimeMillis()) / (60 * 1000) + 1;
+        model.put("remainingMinutes", remainingMinutes);
+        Template template = fm.getTemplate("locked.html");
+        template.process(model, response.getWriter());
+        response.setContentType("text/html");
+        response.setStatus(HttpServletResponse.SC_OK);
+        return;
+      }
+      catch (TemplateException error) {
+        response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        return;
+      }
+    }
+    
+    // Get form parameters
     String username = request.getParameter("username");
     String password = request.getParameter("password");
     String surname = request.getParameter("surname");
 
     try {
       if (authenticated(username, password)) {
+        // Successful login, reset attempts
+        resetAttempts(clientIp);
+        
         // Get search results and merge with template
         Map<String, Object> model = new HashMap<>();
         model.put("records", searchResults(surname));
@@ -101,8 +175,25 @@ public class AppServlet extends HttpServlet {
         template.process(model, response.getWriter());
       }
       else {
-        Template template = fm.getTemplate("invalid.html");
-        template.process(null, response.getWriter());
+        // Failed login, increment attempts
+        incrementAttempts(clientIp);
+        AttemptInfo info = attemptTracker.get(clientIp);
+        
+        Map<String, Object> model = new HashMap<>();
+        model.put("remainingAttempts", MAX_ATTEMPTS - info.attempts);
+        
+        // Check if user reached max attempts
+        if (info.attempts >= MAX_ATTEMPTS) {
+          lockout(clientIp);
+          long remainingMinutes = LOCKOUT_DURATION_MS / (60 * 1000);
+          model.put("remainingMinutes", remainingMinutes);
+          //Show the locked out page
+          Template template = fm.getTemplate("locked.html");
+          template.process(model, response.getWriter());
+        } else {
+          Template template = fm.getTemplate("invalid.html");
+          template.process(model, response.getWriter());
+        }
       }
       response.setContentType("text/html");
       response.setStatus(HttpServletResponse.SC_OK);
@@ -155,6 +246,76 @@ public class AppServlet extends HttpServlet {
     } catch (NoSuchAlgorithmException e) {
       throw new RuntimeException("SHA-256 not available", e);
     }
+  }
+
+  // METHODS FOR BRUTE FORCE PROTECTION
+  /**
+   * Get client IP address from request
+   */
+  private String getClientIp(HttpServletRequest request) {
+    String ip = request.getHeader("X-Forwarded-For");
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+      ip = request.getHeader("X-Real-IP");
+    }
+    if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+      ip = request.getRemoteAddr();
+    }
+    return ip;
+  }
+
+  /**
+   * Check if the given IP is currently locked out
+   */
+  private boolean isLockedOut(String ip) {
+    AttemptInfo info = attemptTracker.get(ip);
+    if (info == null) {
+      return false;
+    }
+    
+    // Check if lockout has expired
+    if (info.lockoutUntil > 0 && System.currentTimeMillis() < info.lockoutUntil) {
+      return true;
+    }
+    
+    // Lockout expired, clear it
+    if (info.lockoutUntil > 0 && System.currentTimeMillis() >= info.lockoutUntil) {
+      resetAttempts(ip);
+    }
+    
+    return false;
+  }
+
+  /**
+   * Increment failed login attempts for the given IP
+   */
+  private void incrementAttempts(String ip) {
+    attemptTracker.compute(ip, (key, info) -> {
+      if (info == null) {
+        info = new AttemptInfo();
+      }
+      info.attempts++;
+      return info;
+    });
+  }
+
+  /**
+   * Lock out the given IP address
+   */
+  private void lockout(String ip) {
+    attemptTracker.compute(ip, (key, info) -> {
+      if (info == null) {
+        info = new AttemptInfo();
+      }
+      info.lockoutUntil = System.currentTimeMillis() + LOCKOUT_DURATION_MS;
+      return info;
+    });
+  }
+
+  /**
+   * Reset attempts for the given IP (on successful login)
+   */
+  private void resetAttempts(String ip) {
+    attemptTracker.remove(ip);
   }
 
 }
