@@ -32,8 +32,8 @@ import io.github.cdimascio.dotenv.Dotenv; // Added for .env file
 public class AppServlet extends HttpServlet {
 
   private static final String CONNECTION_URL;
-  private static final String AUTH_QUERY = "select * from user where username='%s' and password='%s'";
-  private static final String SEARCH_QUERY = "select * from patient where surname='%s' collate nocase";
+  private static final String AUTH_QUERY = "select * from user where username = ? and password= ?";        
+  private static final String SEARCH_QUERY = "select * from patient where surname= ? collate nocase";
   
   // Attempt tracking constants
   private static final int MAX_ATTEMPTS = 5;
@@ -205,29 +205,41 @@ public class AppServlet extends HttpServlet {
 
   private boolean authenticated(String username, String password) throws SQLException {
     String hashedPassword = hashPassword(password);
-    String query = String.format(AUTH_QUERY, username, hashedPassword);
-    try (Statement stmt = database.createStatement()) {
-      ResultSet results = stmt.executeQuery(query);
-      return results.next();
+    // String query = String.format(AUTH_QUERY, username, hashedPassword);    
+    try (PreparedStatement stmt = database.prepareStatement(AUTH_QUERY)) {        // prepared statement instead
+      stmt.setString(1,username)
+      stmt.setString(2,hashedPassword)   // use new hashed password
+      
+      try (ResultSet results = stmt.executeQuery(query))
+        return results.next
+      }
     }
   }
 
   private List<Record> searchResults(String surname) throws SQLException {
     List<Record> records = new ArrayList<>();
-    String query = String.format(SEARCH_QUERY, surname);
-    try (Statement stmt = database.createStatement()) {
-      ResultSet results = stmt.executeQuery(query);
-      while (results.next()) {
-        Record rec = new Record();
-        rec.setSurname(results.getString(2));
-        rec.setForename(results.getString(3));
-        rec.setAddress(results.getString(4));
-        rec.setDateOfBirth(results.getString(5));
-        rec.setDoctorId(results.getString(6));
-        rec.setDiagnosis(results.getString(7));
-        records.add(rec);
+
+    // String query = String.format(SEARCH_QUERY, surname);
+    try (PreparedStatement stmt = database.prepareStatement(SEARCH_QUERY)) {
+      // ResultSet results = stmt.executeQuery(query);
+
+      stmt.setString(1,surname)   
+      
+      try(ResultSet results = stmt.executeQuery()) {
+        while (results.next()) {
+          Record rec = new Record();
+          rec.setSurname(results.getString(2));
+          rec.setForename(results.getString(3));
+          rec.setAddress(results.getString(4));
+          rec.setDateOfBirth(results.getString(5));
+          rec.setDoctorId(results.getString(6));
+          rec.setDiagnosis(results.getString(7));
+          records.add(rec);
+        }
       }
     }
+
+    
     return records;
   }
 
