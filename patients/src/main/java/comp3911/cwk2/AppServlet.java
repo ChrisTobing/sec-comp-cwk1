@@ -33,7 +33,8 @@ public class AppServlet extends HttpServlet {
 
   private static final String CONNECTION_URL;
   private static final String AUTH_QUERY = "select * from user where username = ? and password= ?";        
-  private static final String SEARCH_QUERY = "select * from patient where surname= ? collate nocase";
+  private static final String SEARCH_QUERY =
+    "SELECT * FROM patient WHERE surname=? COLLATE NOCASE AND gp_id=?";
   
   // Attempt tracking constants
   private static final int MAX_ATTEMPTS = 5;
@@ -135,113 +136,116 @@ public class AppServlet extends HttpServlet {
   }
 
   @Override
-  protected void doPost(HttpServletRequest request, HttpServletResponse response)
-   throws ServletException, IOException {
+protected void doPost(HttpServletRequest request, HttpServletResponse response)
+ throws ServletException, IOException {
+
     String clientIp = getClientIp(request);
-    
+
     // Check if IP is currently locked out
     if (isLockedOut(clientIp)) {
-      try {
-        AttemptInfo info = attemptTracker.get(clientIp);
-        Map<String, Object> model = new HashMap<>();
-        long remainingMinutes = (info.lockoutUntil - System.currentTimeMillis()) / (60 * 1000) + 1;
-        model.put("remainingMinutes", remainingMinutes);
-        Template template = fm.getTemplate("locked.html");
-        template.process(model, response.getWriter());
-        response.setContentType("text/html");
-        response.setStatus(HttpServletResponse.SC_OK);
-        return;
-      }
-      catch (TemplateException error) {
-        response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-        return;
-      }
+        try {
+            AttemptInfo info = attemptTracker.get(clientIp);
+            Map<String, Object> model = new HashMap<>();
+            long remainingMinutes = (info.lockoutUntil - System.currentTimeMillis()) / (60 * 1000) + 1;
+            model.put("remainingMinutes", remainingMinutes);
+            Template template = fm.getTemplate("locked.html");
+            template.process(model, response.getWriter());
+            response.setContentType("text/html");
+            response.setStatus(HttpServletResponse.SC_OK);
+            return;
+        }
+        catch (TemplateException error) {
+            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            return;
+        }
     }
-    
+
     // Get form parameters
     String username = request.getParameter("username");
     String password = request.getParameter("password");
     String surname = request.getParameter("surname");
 
     try {
-      if (authenticated(username, password)) {
-        // Successful login, reset attempts
-        resetAttempts(clientIp);
-        
-        // Get search results and merge with template
-        Map<String, Object> model = new HashMap<>();
-        model.put("records", searchResults(surname));
-        Template template = fm.getTemplate("details.html");
-        template.process(model, response.getWriter());
-      }
-      else {
-        // Failed login, increment attempts
-        incrementAttempts(clientIp);
-        AttemptInfo info = attemptTracker.get(clientIp);
-        
-        Map<String, Object> model = new HashMap<>();
-        model.put("remainingAttempts", MAX_ATTEMPTS - info.attempts);
-        
-        // Check if user reached max attempts
-        if (info.attempts >= MAX_ATTEMPTS) {
-          lockout(clientIp);
-          long remainingMinutes = LOCKOUT_DURATION_MS / (60 * 1000);
-          model.put("remainingMinutes", remainingMinutes);
-          //Show the locked out page
-          Template template = fm.getTemplate("locked.html");
-          template.process(model, response.getWriter());
-        } else {
-          Template template = fm.getTemplate("invalid.html");
-          template.process(model, response.getWriter());
+        int gpId = authenticated(username, password); // Flaw 5 fix
+        if (gpId >= 0) {
+
+            resetAttempts(clientIp);
+
+            Map<String, Object> model = new HashMap<>();
+            model.put("records", searchResults(surname, gpId)); // Flaw 5 fix
+
+            Template template = fm.getTemplate("details.html");
+            template.process(model, response.getWriter());
         }
-      }
-      response.setContentType("text/html");
-      response.setStatus(HttpServletResponse.SC_OK);
+        else {
+            incrementAttempts(clientIp);
+            AttemptInfo info = attemptTracker.get(clientIp);
+            Map<String, Object> model = new HashMap<>();
+            model.put("remainingAttempts", MAX_ATTEMPTS - info.attempts);
+
+            if (info.attempts >= MAX_ATTEMPTS) {
+                lockout(clientIp);
+                long remainingMinutes = LOCKOUT_DURATION_MS / (60 * 1000);
+                model.put("remainingMinutes", remainingMinutes);
+                Template template = fm.getTemplate("locked.html");
+                template.process(model, response.getWriter());
+            } else {
+                Template template = fm.getTemplate("invalid.html");
+                template.process(model, response.getWriter());
+            }
+        }
+
+        response.setContentType("text/html");
+        response.setStatus(HttpServletResponse.SC_OK);
     }
     catch (Exception error) {
-      response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+        response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
     }
-  }
+}
 
-  private boolean authenticated(String username, String password) throws SQLException {
-    String hashedPassword = hashPassword(password);
-    // String query = String.format(AUTH_QUERY, username, hashedPassword);    
-    try (PreparedStatement stmt = database.prepareStatement(AUTH_QUERY)) {        // prepared statement instead
-      stmt.setString(1,username)
-      stmt.setString(2,hashedPassword)   // use new hashed password
-      
-      try (ResultSet results = stmt.executeQuery(query))
-        return results.next
+
+  
+  
+  // Flaw 5 fix: return user id for access control enforcement
+  // Flaw 5 fix: return GP id
+  private int authenticated(String username, String password) throws SQLException {
+      PreparedStatement stmt = database.prepareStatement(AUTH_QUERY);
+      stmt.setString(1, username);
+      stmt.setString(2, hashPassword(password));
+      ResultSet results = stmt.executeQuery();
+
+      if (results.next()) {
+          return results.getInt("id");
+      } else {
+          return -1;
       }
-    }
   }
 
-  private List<Record> searchResults(String surname) throws SQLException {
-    List<Record> records = new ArrayList<>();
 
-    // String query = String.format(SEARCH_QUERY, surname);
-    try (PreparedStatement stmt = database.prepareStatement(SEARCH_QUERY)) {
-      // ResultSet results = stmt.executeQuery(query);
 
-      stmt.setString(1,surname)   
-      
-      try(ResultSet results = stmt.executeQuery()) {
-        while (results.next()) {
-          Record rec = new Record();
-          rec.setSurname(results.getString(2));
-          rec.setForename(results.getString(3));
-          rec.setAddress(results.getString(4));
-          rec.setDateOfBirth(results.getString(5));
-          rec.setDoctorId(results.getString(6));
-          rec.setDiagnosis(results.getString(7));
-          records.add(rec);
-        }
+  // Flaw 5 fix: only return patients belonging to this GP
+  private List<Record> searchResults(String surname, int gpId) throws SQLException {
+      List<Record> records = new ArrayList<>();
+
+      PreparedStatement stmt = database.prepareStatement(SEARCH_QUERY);
+      stmt.setString(1, surname);
+      stmt.setInt(2, gpId);
+
+      try (ResultSet results = stmt.executeQuery()) {
+          while (results.next()) {
+              Record rec = new Record();
+              rec.setSurname(results.getString(2));
+              rec.setForename(results.getString(3));
+              rec.setAddress(results.getString(4));
+              rec.setDateOfBirth(results.getString(5));
+              rec.setDoctorId(results.getString(6));
+              rec.setDiagnosis(results.getString(7));
+              records.add(rec);
+          }
       }
-    }
-
-    
-    return records;
+      return records;
   }
+
 
   private String hashPassword(String password) {
     try {
