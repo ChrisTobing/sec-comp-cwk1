@@ -209,14 +209,15 @@ public class AppServlet extends HttpServlet {
     String hashedPassword = hashPassword(password);
     // String query = String.format(AUTH_QUERY, username, hashedPassword);    
     try (PreparedStatement stmt = database.prepareStatement(AUTH_QUERY)) {        // prepared statement instead
-      stmt.setString(1,username)
-      stmt.setString(2,hashedPassword)   // use new hashed password
+      stmt.setString(1,username);
+      stmt.setString(2,hashedPassword);   // use new hashed password
       
-      try (ResultSet results = stmt.executeQuery(query))
-        return results.next
+      try (ResultSet results = stmt.executeQuery()){
+        return results.next();
       }
     }
   }
+  
 
   private List<Record> searchResults(String surname) throws SQLException {
     List<Record> records = new ArrayList<>();
@@ -225,7 +226,7 @@ public class AppServlet extends HttpServlet {
     try (PreparedStatement stmt = database.prepareStatement(SEARCH_QUERY)) {
       // ResultSet results = stmt.executeQuery(query);
 
-      stmt.setString(1,surname)   
+      stmt.setString(1,surname);   
       
       try(ResultSet results = stmt.executeQuery()) {
         while (results.next()) {
