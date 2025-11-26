@@ -37,7 +37,7 @@ public class AppServlet extends HttpServlet {
   
   // Attempt tracking constants
   private static final int MAX_ATTEMPTS = 5;
-  private static final long LOCKOUT_DURATION_MS = 1 * 60 * 1000; // 15 minutes in milliseconds
+  private static final long LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes in milliseconds
 
   private final Configuration fm = new Configuration(Configuration.VERSION_2_3_28);
   private Connection database;
