@@ -7,10 +7,13 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.PreparedStatement;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
 
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
@@ -208,18 +211,25 @@ protected void doPost(HttpServletRequest request, HttpServletResponse response)
   
   // Flaw 5 fix: return user id for access control enforcement
   // Flaw 5 fix: return GP id
+  // Flaw 5 fix: return GP id
   private int authenticated(String username, String password) throws SQLException {
+      String hashed = hashPassword(password);
+      System.out.println("DEBUG auth: username=" + username + ", hash=" + hashed);
+
       PreparedStatement stmt = database.prepareStatement(AUTH_QUERY);
       stmt.setString(1, username);
-      stmt.setString(2, hashPassword(password));
+      stmt.setString(2, hashed);
       ResultSet results = stmt.executeQuery();
 
       if (results.next()) {
+          System.out.println("DEBUG auth: SUCCESS for " + username + " (id=" + results.getInt("id") + ")");
           return results.getInt("id");
       } else {
+          System.out.println("DEBUG auth: FAIL for " + username);
           return -1;
       }
   }
+
 
 
 
